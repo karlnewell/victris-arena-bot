@@ -1,0 +1,56 @@
+# Measures GPU utilization and training speed for a few trainer settings, ~20 minutes total,
+# so a long run can be sized to stay above NRP's 40% GPU utilization rule.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: victris-util-test
+  namespace: i2-llm
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 10800
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: [k8s-haosu-21.sdsc.optiputer.net]
+      containers:
+        - name: test
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -e
+              nvidia-smi --query-gpu=name --format=csv,noheader; nproc
+              pip install -q --root-user-action=ignore https://assets.victris.ai/download/0.75.1/arena_sim-0.75.1-py3-none-any.whl
+              run() {  # label, then league arguments
+                label="$1"; shift
+                : > /tmp/util.txt
+                (while sleep 5; do nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits >> /tmp/util.txt; done) &
+                sampler=$!
+                python -u -m arena_sim.examples.league --out /tmp/t --bots random ts-starter v3n v2n v1n rushern startern closen farn v3 close far \
+                  --scripts /cfg/sparring.js --workers 16 --minutes 3 --eval-every 1000000000 "$@" 2>/dev/null | tail -1 > /tmp/last.txt
+                kill $sampler
+                steps=$(grep -o '[0-9,]* steps' /tmp/last.txt | tr -d ', steps')
+                # skip the first 30 s of samples (startup)
+                awk -v l="$label" -v s="$steps" 'NR>6 {u+=$1; n++; if ($1<40) low++} END {printf "RESULT %-28s gpu mean %.0f%%  samples<40%%: %d/%d  speed %.0f steps/s\n", l, u/n, low, n, s/180}' /tmp/util.txt
+              }
+              run "w1024 e4 selfplay .2 (ref)" --width 1024
+              run "w2048 e4 selfplay .2" --width 2048
+              run "w2048 e8 selfplay .2" --width 2048 --epochs 8
+              run "w1024 e8 selfplay .5" --width 1024 --epochs 8 --self-play 0.5
+              run "w2048 e8 selfplay .5" --width 2048 --epochs 8 --self-play 0.5
+          volumeMounts:
+            - { name: sparring, mountPath: /cfg }
+          resources:
+            requests: { cpu: "16", memory: 16Gi, ephemeral-storage: 10Gi, nvidia.com/gpu: 1 }
+            limits: { cpu: "19", memory: 19Gi, ephemeral-storage: 12Gi, nvidia.com/gpu: 1 }
+      volumes:
+        - name: sparring
+          configMap: { name: victris-sparring }

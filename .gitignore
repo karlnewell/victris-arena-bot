@@ -12,3 +12,4 @@ __pycache__/
 ml/sparring.js
 ml/*.log
 ml/models/
+ml/gen/

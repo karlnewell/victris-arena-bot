@@ -6,7 +6,8 @@
     "start": "tsx --env-file-if-exists=.env bot.ts",
     "setup": "curl -sS -o arena-sim.mjs https://assets.victris.ai/download/0.75.1/arena-sim.mjs",
     "sim": "tsx sim-test.ts",
-    "typecheck": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --allowImportingTsExtensions --skipLibCheck strategy.ts bot.ts"
+    "typecheck": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --allowImportingTsExtensions --skipLibCheck strategy.ts bot.ts",
+    "sparring": "node ml/build_sparring.mjs"
   },
   "dependencies": {
     "https-proxy-agent": "^9.1.0",

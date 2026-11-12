@@ -1,0 +1,84 @@
+# 10-hour league training run on one standard NRP GPU, network width 1024 (sized for GPU use above 40%). Networks are written to the
+# victris-models volume. The opponents bundle comes from the victris-sparring ConfigMap:
+#   kubectl -n i2-llm create configmap victris-sparring --from-file=sparring.js=../sparring.js
+#   kubectl apply -f league-job.yaml
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: victris-models
+  namespace: i2-llm
+spec:
+  storageClassName: rook-ceph-block
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: victris-league
+  namespace: i2-llm
+spec:
+  backoffLimit: 2
+  activeDeadlineSeconds: 72000  # covers queueing; training stops itself after 600 minutes
+  ttlSecondsAfterFinished: 259200
+  template:
+    spec:
+      restartPolicy: Never
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+              - matchExpressions:
+                  - key: topology.kubernetes.io/region
+                    operator: In
+                    values: [us-west]
+                  # This node's cached copy of the image fails with "exec format error".
+                  - key: kubernetes.io/hostname
+                    operator: NotIn
+                    values: [k8s-haosu-21.sdsc.optiputer.net]
+                  # Older cards only: width 1024 measured 57% GPU use on an RTX 2080 Ti, 26% on a V100.
+                  - key: nvidia.com/gpu.product
+                    operator: In
+                    values: [NVIDIA-GeForce-RTX-2080-Ti, NVIDIA-GeForce-GTX-1080-Ti, NVIDIA-GeForce-GTX-1080, NVIDIA-TITAN-Xp]
+      containers:
+        - name: train
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -e
+              nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+              pip install -q --root-user-action=ignore https://assets.victris.ai/download/0.75.1/arena_sim-0.75.1-py3-none-any.whl
+              OUT=/out/league-w1024
+              INIT=""
+              # A retried pod resumes from the last save instead of starting over.
+              if [ -f "$OUT/last.pt" ]; then cp "$OUT/last.pt" /out/resume.pt; INIT="--init /out/resume.pt"; echo "resuming from last.pt"; fi
+              # GPU utilization: sampled every 15 s, mean reported every 10 minutes.
+              (while true; do t=0; n=0; for i in $(seq 40); do sleep 15; u=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits); t=$((t+u)); n=$((n+1)); done; echo "gpu mean $((t/n))% over 10 min"; done) &
+              python -u -m arena_sim.examples.league $INIT --out "$OUT" \
+                --bots random ts-starter v3n v2n v1n rushern startern closen farn v3 close far \
+                --scripts /cfg/sparring.js --width 1024 \
+                --minutes 600 --workers 16 --eval-every 10000000
+              kill %1 || true
+              ls -la "$OUT"
+          volumeMounts:
+            - { name: models, mountPath: /out }
+            - { name: sparring, mountPath: /cfg }
+          resources:
+            requests:
+              cpu: "16"
+              memory: 16Gi
+              ephemeral-storage: 10Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: "19"
+              memory: 19Gi
+              ephemeral-storage: 12Gi
+              nvidia.com/gpu: 1
+      volumes:
+        - name: models
+          persistentVolumeClaim: { claimName: victris-models }
+        - name: sparring
+          configMap: { name: victris-sparring }

@@ -1,0 +1,55 @@
+# Quick check that a standard GPU, outbound internet and the trainer all work on NRP.
+# Runs ~3 minutes and exits by itself. kubectl -n i2-llm apply -f gpu-test-job.yaml
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: victris-gpu-test
+  namespace: i2-llm
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: 3600
+  ttlSecondsAfterFinished: 86400
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: test
+          image: pytorch/pytorch:2.5.1-cuda12.4-cudnn9-runtime
+          command: ["bash", "-c"]
+          args:
+            - |
+              set -e
+              nvidia-smi --query-gpu=name,memory.total --format=csv
+              nproc
+              pip install -q https://assets.victris.ai/download/0.75.1/arena_sim-0.75.1-py3-none-any.whl
+              python -c "import torch; print('torch', torch.__version__, 'cuda', torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+              cat > /tmp/prof.py <<'PY'
+              import time, atexit, os
+              from arena_sim.examples import league, train_ppo_gpu as T
+              tot = {"collect": 0.0, "update": 0.0}; t00 = time.time(); pid = os.getpid()
+              for name in tot:
+                  orig = getattr(T.Trainer, name)
+                  def wrap(self, *a, _o=orig, _n=name, **k):
+                      t = time.time(); r = _o(self, *a, **k); tot[_n] += time.time() - t; return r
+                  setattr(T.Trainer, name, wrap)
+              def report():
+                  if os.getpid() == pid:
+                      print(f"PROFILE collect {tot['collect']:.0f}s update {tot['update']:.0f}s total {time.time() - t00:.0f}s", flush=True)
+              atexit.register(report)
+              if __name__ == "__main__":
+                  league.main()
+              PY
+              (while sleep 10; do nvidia-smi --query-gpu=utilization.gpu,memory.used --format=csv,noheader; done) &
+              python -u /tmp/prof.py --out /tmp/league-test --bots random ts-starter --minutes 2 --workers 8 --eval-every 100000000
+              kill %1 || true
+          resources:
+            requests:
+              cpu: "8"
+              memory: 16Gi
+              ephemeral-storage: 10Gi
+              nvidia.com/gpu: 1
+            limits:
+              cpu: 9600m
+              memory: 19Gi
+              ephemeral-storage: 12Gi
+              nvidia.com/gpu: 1
