@@ -11,3 +11,4 @@ ml/data/
 __pycache__/
 ml/sparring.js
 ml/*.log
+ml/models/

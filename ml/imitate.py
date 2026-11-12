@@ -1,11 +1,15 @@
-"""Imitation learning from ladder replays: the simulator package's example, with polite retries.
+"""Imitation learning from ladder replays.
 
-    .venv/bin/python imitate.py --ladder https://victrisarena.com --min-rating 2600 --limit 150 \
+The simulator package's example, with polite retries.
+
+    uv run imitate.py --ladder https://victrisarena.com --min-rating 2600 --limit 150 \
         --cache replays --out models/bc-2600
 
-The bundled downloader gives up on the first temporary 503. This wraps its HTTP fetch to wait the
-server's Retry-After (and pause briefly between requests), then runs the example unchanged.
+The bundled downloader gives up on the first temporary 503. This wraps its HTTP fetch
+to wait the server's Retry-After (and pause briefly between requests), then runs the
+example unchanged.
 """
+
 import time
 import urllib.error
 
@@ -25,7 +29,9 @@ def polite_get(url: str) -> bytes:
         except urllib.error.HTTPError as e:
             if e.code not in (429, 503) or attempt == 7:
                 raise
-            wait = min(120.0, float(e.headers.get("Retry-After") or 0) or 2.0 * 2**attempt)
+            wait = min(
+                120.0, float(e.headers.get("Retry-After") or 0) or 2.0 * 2**attempt
+            )
             print(f"{e.code} from the ladder; waiting {wait:.0f}s", flush=True)
             time.sleep(wait)
     raise RuntimeError("unreachable")

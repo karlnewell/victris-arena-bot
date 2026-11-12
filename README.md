@@ -17,11 +17,14 @@ npm run sim -- 100   # 100 simulated games per opponent
 
 ## Play on the ladder
 
-The bot token is secret and is not in this repository. Put it in a `.env` file (git-ignored) or
-in the environment:
+The bot token is secret and is not in this repository. Copy `.env.example` to `.env`
+(git-ignored) and fill in `ARENA_TOKEN`; `npm start` loads it. Variables set in the
+environment also work:
 
 ```bash
-ARENA_TOKEN=<token> ARENA_VERSION=v3 ARENA_MATCHES=3 npm start
+cp .env.example .env   # then edit
+npm start
+ARENA_VERSION=v3 ARENA_MATCHES=3 npm start
 ```
 
 Every change to the strategy should queue as a new version (`v2`, `v3`, …).

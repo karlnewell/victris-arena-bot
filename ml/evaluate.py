@@ -1,7 +1,10 @@
-"""Win rates of a trained network in the simulator against the bundled bots and our scripted ones.
+"""Win rates of a trained network in the simulator.
 
-    .venv/bin/python evaluate.py models/bc-2600.pt [games]
+Plays the bundled bots and our scripted ones.
+
+uv run evaluate.py models/bc-2600.pt [games]
 """
+
 import os
 import sys
 
@@ -29,7 +32,18 @@ if __name__ == "__main__":
         policy = load(path)
         policy.greedy = greedy
         for opponent in ("random", "ts-starter", "rusher", "v1", "v3"):
-            env = FastVectorEnv(games, opponent=opponent, scripts=[os.path.join(HERE, "sparring.js")], grid="uint8", workers=2)
+            env = FastVectorEnv(
+                games,
+                opponent=opponent,
+                scripts=[os.path.join(HERE, "sparring.js")],
+                grid="uint8",
+                workers=2,
+            )
             r = results(policy, env)
             env.close()
-            print(f"{'greedy ' if greedy else 'sampled'} vs {opponent:10} win {np.mean(r == 1):.0%} loss {np.mean(r == -1):.0%} draw {np.mean(r == 0):.0%}", flush=True)
+            mode = "greedy " if greedy else "sampled"
+            w, lo, d = (np.mean(r == x) for x in (1, -1, 0))
+            print(
+                f"{mode} vs {opponent:10} win {w:.0%} loss {lo:.0%} draw {d:.0%}",
+                flush=True,
+            )

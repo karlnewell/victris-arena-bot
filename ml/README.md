@@ -3,18 +3,21 @@
 Trains a network to imitate the ladder's strongest bots from their public replays, then plays it.
 Nothing here has produced a trained model yet: the first download was stopped part-way.
 
-## Setup (Python 3.10+)
+## Setup (Python 3.11+, [uv](https://docs.astral.sh/uv/))
 
 ```bash
 cd ml
-python3 -m venv .venv
-.venv/bin/pip install -r requirements.txt
+uv sync
 ```
+
+Dependencies are in `pyproject.toml` and pinned in `uv.lock`. PyTorch comes from the CPU-only
+index; for a GPU host, change the `pytorch-cpu` index URL in `pyproject.toml` (for example to
+`https://download.pytorch.org/whl/cu128`) and run `uv lock`.
 
 ## 1. Download replays and train
 
 ```bash
-.venv/bin/python imitate.py --ladder https://victrisarena.com --min-rating 2600 --limit 150 \
+uv run imitate.py --ladder https://victrisarena.com --min-rating 2600 --limit 150 \
   --cache replays --out models/bc-2600 --epochs 8 --eval-games 256
 ```
 
@@ -26,7 +29,7 @@ hour; `--cache` makes a re-run fetch only what is missing.
 
 ```bash
 (cd .. && npm install && npx esbuild ml/sparring.ts --bundle --format=iife --outfile=ml/sparring.js)
-.venv/bin/python evaluate.py models/bc-2600.pt 256
+uv run evaluate.py models/bc-2600.pt 256
 ```
 
 Reports win rates against Random, the starter, and our scripted bots (rusher, v1, v3).
@@ -35,8 +38,9 @@ Reports win rates against Random, the starter, and our scripted bots (rusher, v1
 
 ```bash
 cp models/bc-2600.pt models/current.pt
-ARENA_TOKEN=<token> ARENA_VERSION=v4 ARENA_MATCHES=10 .venv/bin/python net_bot.py
+ARENA_VERSION=v4 ARENA_MATCHES=10 uv run --env-file ../.env net_bot.py
 ```
 
 `net_bot.py` is the Python starter's connection with `decide` replaced by the network.
-It has not been run against the ladder yet.
+The token comes from the repository's `.env` (see `../.env.example`); variables given on the
+command line override it. It has not been run against the ladder yet.
