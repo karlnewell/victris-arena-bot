@@ -1,0 +1,20 @@
+{
+  "name": "obsidian-edge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx bot.ts",
+    "setup": "curl -sS -o arena-sim.mjs https://assets.victris.ai/download/0.75.1/arena-sim.mjs",
+    "sim": "tsx sim-test.ts",
+    "typecheck": "tsc --noEmit --strict --target es2022 --module esnext --moduleResolution bundler --allowImportingTsExtensions --skipLibCheck strategy.ts bot.ts"
+  },
+  "dependencies": {
+    "https-proxy-agent": "^9.1.0",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.0",
+    "tsx": "^4.19.0",
+    "typescript": "^7.0.2"
+  }
+}
