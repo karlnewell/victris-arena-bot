@@ -40,6 +40,7 @@ export interface Observation {
   danger: { tile: Pos; tick: number; damage?: number }[];
   pickups: { id?: number; pos: Pos; kind: string; ready_in: number }[];
   areas?: { owner: number; pos: Pos; radius: number; slow: number; ticks_left: number; tiles: Pos[] }[];
+  events?: { kind: string; fighter?: number; attack?: string; pad?: number; pickup?: string }[];
   zone: { center: Pos; radius: number; next_radius: number | null; shrinks_in: number | null };
 }
 
@@ -49,9 +50,9 @@ interface Rules {
   attacks: {
     ranged?: { speed?: number };
     frostburst: { range: number; slow?: number };
-    repulsor?: { push?: number };
+    repulsor?: { push?: number; cooldown?: number };
   };
-  pickups?: { first_spawn?: number; health?: { amount: number } };
+  pickups?: { first_spawn?: number; health?: { amount: number; respawn?: number }; power?: { respawn?: number } };
 }
 
 /** One tick's reply: a step or a dash (or neither), then an optional attack. An empty turn is idle. */
@@ -69,6 +70,8 @@ interface Memory {
   enemyFreeAt: number;
   /** The tick each pad is next stocked, by pad id, as far as we have seen. */
   padReadyAt: Record<number, number>;
+  /** The first tick on which the enemy's repulsor is ready again, from the attacks we saw. */
+  enemyShoveAt: number;
   /** Walking distances to goals we have routed to, by goal tile. */
   fields: Record<string, number[][]>;
 }
@@ -236,6 +239,15 @@ function wallBehind(match: Match, p: Pos, from: Pos, reach: number): boolean {
 
 /** Update what we know about when the enemy can next step. */
 function trackEnemy(obs: Observation, match: Match, memory: Memory, enemy: Enemy | undefined): void {
+  // Events describe the previous tick: the enemy's shoves (its cooldown is hidden) and pads taken.
+  for (const e of obs.events ?? []) {
+    if (e.kind === "attack" && e.attack === "repulsor" && e.fighter !== undefined && e.fighter !== obs.self.id)
+      memory.enemyShoveAt = obs.tick - 1 + (match.rules.attacks.repulsor?.cooldown ?? 12);
+    if (e.kind === "pickup" && e.pad !== undefined) {
+      const respawn = (e.pickup === "health" ? match.rules.pickups?.health?.respawn : match.rules.pickups?.power?.respawn) ?? 120;
+      memory.padReadyAt[e.pad] = obs.tick - 1 + respawn;
+    }
+  }
   if (!enemy) return;
   const cooldown = match.rules.stats?.move_cooldown ?? 2;
   const slow = match.rules.attacks.frostburst.slow ?? 2;
@@ -288,9 +300,22 @@ function movement(obs: Observation, match: Match, memory: Memory): Turn {
       if (d <= POINT_BLANK) s += 90 * (POINT_BLANK + 1 - d);
       else if (d < NEAR) s += 25 * (NEAR - d);
       else if (d > FAR) s += 18 * (d - FAR);
-      // A shove into a wall is a slam and a stun: keep open ground behind us.
+      // A shove into a wall is a slam and a stun, and the stun is free hits. While the enemy's
+      // repulsor is ready and it can get beside us this tick (a step, or a dash), keep open ground
+      // behind us.
       const push = match.rules.attacks.repulsor?.push ?? 3;
-      if (d <= SHOVE_REACH && wallBehind(match, tile, enemy.pos, push)) s += d <= POINT_BLANK ? 70 : 30;
+      const shoveReady = obs.tick >= memory.enemyShoveAt;
+      const reach = enemy.dash_cooldown === 0 ? SHOVE_REACH : POINT_BLANK;
+      if (shoveReady && d <= reach && wallBehind(match, tile, enemy.pos, push)) s += d <= POINT_BLANK ? 160 : 90;
+      // The same trick, ours: step beside an enemy that cannot step away this tick, with a wall
+      // behind it, and shove (the attack phase fires the repulsor when we end adjacent).
+      if (
+        d === 1 &&
+        (me.cooldowns.repulsor ?? 1) === 0 &&
+        memory.enemyFreeAt > obs.tick &&
+        wallBehind(match, enemy.pos, tile, push)
+      )
+        s -= 250;
       // A step spends the cooldown that dodges the next shot: only step for a reason.
       if (stepping) s += 10;
     }
@@ -368,7 +393,7 @@ function attack(obs: Observation, match: Match, memory: Memory, from: Pos): Turn
 }
 
 export function decide(obs: Observation, match: Match): Turn {
-  const memory = (match.memory ??= { seen: null, enemyFreeAt: 0, padReadyAt: {}, fields: {} });
+  const memory = (match.memory ??= { seen: null, enemyFreeAt: 0, padReadyAt: {}, enemyShoveAt: 0, fields: {} });
   trackEnemy(obs, match, memory, obs.enemies[0]);
   // Stunned or recovering from a dash: nothing to decide meanwhile.
   if (obs.self.state !== "idle") return {};

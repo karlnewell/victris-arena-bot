@@ -21,7 +21,7 @@ The bot token is secret and is not in this repository. Put it in a `.env` file (
 in the environment:
 
 ```bash
-ARENA_TOKEN=<token> ARENA_VERSION=v2 ARENA_MATCHES=3 npm start
+ARENA_TOKEN=<token> ARENA_VERSION=v3 ARENA_MATCHES=3 npm start
 ```
 
 Every change to the strategy should queue as a new version (`v2`, `v3`, …).

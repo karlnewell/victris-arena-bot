@@ -8,6 +8,8 @@ import { Game } from "./arena-sim.mjs";
 import { decide } from "./strategy.ts";
 import { decide as starterDecide } from "./starter-strategy.ts";
 import { decide as v1Decide } from "./versions/v1.ts";
+import { decide as v2Decide } from "./versions/v2.ts";
+import { decide as rusherDecide } from "./versions/rusher.ts";
 
 type Decide = (obs: any, match: any) => any;
 const NOISE = 0.04;
@@ -85,5 +87,7 @@ export function duel(mine: Decide, theirs: Decide, games: number, label: string)
 if (process.argv[1]?.endsWith("sim-test.ts")) {
   const games = Number(process.argv[2] ?? 200);
   duel(decide, starterDecide, games, "starter");
+  duel(decide, rusherDecide, games, "rusher");
   duel(decide, v1Decide, games, "v1");
+  duel(decide, v2Decide, games, "v2");
 }
