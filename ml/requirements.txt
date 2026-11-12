@@ -1,0 +1,6 @@
+# CPU-only PyTorch is much smaller: pip install torch --index-url https://download.pytorch.org/whl/cpu
+torch
+numpy
+websockets>=15
+python-socks
+arena-sim @ https://assets.victris.ai/download/0.75.1/arena_sim-0.75.1-py3-none-any.whl
