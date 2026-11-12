@@ -38,7 +38,7 @@ export interface Observation {
   moves: { dir: Dir; tile: Pos }[];
   dashes: { dir: Dir; tile: Pos }[];
   danger: { tile: Pos; tick: number; damage?: number }[];
-  pickups: { pos: Pos; kind: string; ready_in: number }[];
+  pickups: { id?: number; pos: Pos; kind: string; ready_in: number }[];
   areas?: { owner: number; pos: Pos; radius: number; slow: number; ticks_left: number; tiles: Pos[] }[];
   zone: { center: Pos; radius: number; next_radius: number | null; shrinks_in: number | null };
 }
@@ -49,8 +49,9 @@ interface Rules {
   attacks: {
     ranged?: { speed?: number };
     frostburst: { range: number; slow?: number };
+    repulsor?: { push?: number };
   };
-  pickups?: { health?: { amount: number } };
+  pickups?: { first_spawn?: number; health?: { amount: number } };
 }
 
 /** One tick's reply: a step or a dash (or neither), then an optional attack. An empty turn is idle. */
@@ -66,11 +67,18 @@ interface Memory {
   seen: { pos: Pos; tick: number; slowed: boolean } | null;
   /** The first tick on which the enemy can step again, as far as we can tell. */
   enemyFreeAt: number;
+  /** The tick each pad is next stocked, by pad id, as far as we have seen. */
+  padReadyAt: Record<number, number>;
+  /** Walking distances to goals we have routed to, by goal tile. */
+  fields: Record<string, number[][]>;
 }
 
 export interface Match {
   id: string;
   rules: Rules;
+  /** From hello: every pickup pad, and the map's rows ('#' = wall). Optional: the bot plays without them. */
+  pads?: { id: number; pos: Pos; kind: string }[];
+  map?: string[];
   memory?: Memory;
 }
 
@@ -79,6 +87,10 @@ const NEAR = 4;
 const FAR = 6;
 const POINT_BLANK = 2;
 /** Ticks spent heading for each corner of the patrol while searching, and how far it is from the centre. */
+/** How far we will walk for health once a full heal's worth is missing. */
+const HEALTH_REACH = 14;
+/** An enemy this close can dash in and shove us the same tick. */
+const SHOVE_REACH = 4;
 const PATROL_TICKS = 30;
 const PATROL_RADIUS = 2;
 
@@ -113,6 +125,51 @@ function stepsToLeaveAreas(obs: Observation, p: Pos): number {
   return steps;
 }
 
+/**
+ * Steps needed to walk from `p` to `goal` around walls (a breadth-first search over the map from
+ * hello, with the engine's no-corner-cutting rule). Greedy stepping by straight distance gets stuck
+ * behind a column; this doesn't. Without a map it falls back to the straight distance.
+ */
+function walk(match: Match, memory: Memory, p: Pos, goal: Pos): number {
+  const map = match.map;
+  if (!map) return dist(p, goal);
+  const key = `${goal[0]},${goal[1]}`;
+  let field = memory.fields[key];
+  if (!field) {
+    const open = (x: number, y: number) => map[y] !== undefined && map[y]![x] !== undefined && map[y]![x] !== "#";
+    field = map.map((row) => Array.from(row, () => Infinity));
+    let queue: Pos[] = [];
+    // A goal inside a wall (a zone centre can be) is reached at any open tile beside it.
+    for (let dy = -1; dy <= 1; dy++)
+      for (let dx = -1; dx <= 1; dx++) {
+        const x = goal[0] + dx;
+        const y = goal[1] + dy;
+        const d = open(goal[0], goal[1]) ? (dx || dy ? Infinity : 0) : 1;
+        if (d !== Infinity && open(x, y)) {
+          field[y]![x] = d;
+          queue.push([x, y]);
+        }
+      }
+    while (queue.length) {
+      const next: Pos[] = [];
+      for (const [x, y] of queue)
+        for (let dy = -1; dy <= 1; dy++)
+          for (let dx = -1; dx <= 1; dx++) {
+            const nx = x + dx;
+            const ny = y + dy;
+            if ((!dx && !dy) || !open(nx, ny) || field[ny]![nx] !== Infinity) continue;
+            if (dx && dy && (!open(x + dx, y) || !open(x, y + dy))) continue;
+            field[ny]![nx] = field[y]![x]! + 1;
+            next.push([nx, ny]);
+          }
+      queue = next;
+    }
+    memory.fields[key] = field;
+  }
+  const d = field[p[1]]?.[p[0]];
+  return d === undefined || d === Infinity ? dist(p, goal) + 20 : d;
+}
+
 /** Where to go while the enemy is out of sight: where we last saw it, then around the zone's centre. */
 function searchGoal(obs: Observation, memory: Memory): Pos {
   if (memory.seen && obs.tick - memory.seen.tick <= 12 && outside(obs, memory.seen.pos).next === 0)
@@ -128,23 +185,53 @@ function searchGoal(obs: Observation, memory: Memory): Pos {
   return corners[Math.floor(obs.tick / PATROL_TICKS) % corners.length]!;
 }
 
-/** A stocked pickup worth walking to, or null. */
-function wantedPickup(obs: Observation, match: Match, enemy: Enemy | undefined): Pos | null {
+/**
+ * A pickup worth walking to, or null. Every pad is known from hello, so we head for health when
+ * hurt even if the pad is out of sight, trusting what we last saw of it.
+ */
+function wantedPickup(obs: Observation, match: Match, memory: Memory, enemy: Enemy | undefined): Pos | null {
   const me = obs.self;
   const heal = match.rules.pickups?.health?.amount ?? 0;
+  const firstSpawn = match.rules.pickups?.first_spawn ?? 20;
+  const cooldown = match.rules.stats?.move_cooldown ?? 2;
   const missing = me.max_hp - me.hp;
-  let best: { pos: Pos; d: number } | null = null;
-  for (const p of obs.pickups) {
-    if (p.ready_in !== 0 || outside(obs, p.pos).next > 0) continue;
-    if (p.kind === "health" && missing < heal / 2) continue;
-    const d = dist(me.pos, p.pos);
-    // The more we are hurt, the farther we will go for health.
-    const reach = !enemy ? 8 : p.kind === "health" && missing >= heal ? 5 : 3;
+  for (const p of obs.pickups) if (p.id !== undefined) memory.padReadyAt[p.id] = obs.tick + p.ready_in;
+  const pads = match.pads ?? obs.pickups.map((p, i) => ({ id: p.id ?? -1 - i, pos: p.pos, kind: p.kind }));
+  let best: { pos: Pos; value: number } | null = null;
+  for (const pad of pads) {
+    if (outside(obs, pad.pos).next > 0) continue;
+    const seen = obs.pickups.find((p) => same(p.pos, pad.pos));
+    const readyIn = seen ? seen.ready_in : Math.max(0, (memory.padReadyAt[pad.id] ?? firstSpawn) - obs.tick);
+    const d = walk(match, memory, me.pos, pad.pos);
+    // No use arriving long before it restocks.
+    if (readyIn > d * cooldown + 2) continue;
+    let reach: number;
+    if (pad.kind === "health") {
+      if (missing < heal / 2) continue;
+      reach = missing >= heal ? HEALTH_REACH : 5;
+    } else reach = enemy ? 3 : 8;
     if (d > reach) continue;
-    if (enemy && dist(enemy.pos, p.pos) < d) continue;
-    if (!best || d < best.d) best = { pos: p.pos, d };
+    // It gets there first: don't race for it.
+    if (enemy && walk(match, memory, enemy.pos, pad.pos) < d - 1) continue;
+    const value = (pad.kind === "health" ? 100 : 0) - d;
+    if (!best || value > best.value) best = { pos: pad.pos, value };
   }
   return best ? best.pos : null;
+}
+
+/** Is there a wall or the map edge within `reach` tiles of `p`, going straight away from `from`? */
+function wallBehind(match: Match, p: Pos, from: Pos, reach: number): boolean {
+  const map = match.map;
+  if (!map) return false;
+  const dx = Math.sign(p[0] - from[0]);
+  const dy = Math.sign(p[1] - from[1]);
+  if (!dx && !dy) return false;
+  for (let i = 1; i <= reach; i++) {
+    const row = map[p[1] + dy * i];
+    const cell = row === undefined ? undefined : row[p[0] + dx * i];
+    if (cell === undefined || cell === "#") return true;
+  }
+  return false;
 }
 
 /** Update what we know about when the enemy can next step. */
@@ -177,8 +264,11 @@ function movement(obs: Observation, match: Match, memory: Memory): Turn {
   // After a step we are stuck on the landing tile this long (longer if we start inside a frostburst).
   const slowed = stepsToLeaveAreas(obs, me.pos) > 0 || (me.slow_ticks_left ?? 0) > 0;
   const stuck = cooldown + (slowed ? (match.rules.attacks.frostburst.slow ?? 2) : 0);
-  const pickup = wantedPickup(obs, match, enemy);
-  const goal: Pos | null = pickup ?? (enemy ? null : searchGoal(obs, memory));
+  const pickup = wantedPickup(obs, match, memory, enemy);
+  // Outside the zone (or about to be), the way back in comes before everything else.
+  const here = outside(obs, me.pos);
+  const goal: Pos | null =
+    here.now > 0 || here.next > 0 ? obs.zone.center : (pickup ?? (enemy ? null : searchGoal(obs, memory)));
 
   const score = (tile: Pos, stepping: boolean): number => {
     let s = 0;
@@ -198,10 +288,13 @@ function movement(obs: Observation, match: Match, memory: Memory): Turn {
       if (d <= POINT_BLANK) s += 90 * (POINT_BLANK + 1 - d);
       else if (d < NEAR) s += 25 * (NEAR - d);
       else if (d > FAR) s += 18 * (d - FAR);
+      // A shove into a wall is a slam and a stun: keep open ground behind us.
+      const push = match.rules.attacks.repulsor?.push ?? 3;
+      if (d <= SHOVE_REACH && wallBehind(match, tile, enemy.pos, push)) s += d <= POINT_BLANK ? 70 : 30;
       // A step spends the cooldown that dodges the next shot: only step for a reason.
       if (stepping) s += 10;
     }
-    if (goal) s += 14 * dist(tile, goal) + 0.01 * straight(tile, goal);
+    if (goal) s += 14 * walk(match, memory, tile, goal) + 0.01 * straight(tile, goal);
     else if (enemy) s += 0.01 * Math.abs(straight(tile, enemy.pos) - 25);
     // Prefer the middle of the zone, where there is room to dodge and the zone ends.
     s += 0.5 * dist(tile, obs.zone.center);
@@ -275,7 +368,7 @@ function attack(obs: Observation, match: Match, memory: Memory, from: Pos): Turn
 }
 
 export function decide(obs: Observation, match: Match): Turn {
-  const memory = (match.memory ??= { seen: null, enemyFreeAt: 0 });
+  const memory = (match.memory ??= { seen: null, enemyFreeAt: 0, padReadyAt: {}, fields: {} });
   trackEnemy(obs, match, memory, obs.enemies[0]);
   // Stunned or recovering from a dash: nothing to decide meanwhile.
   if (obs.self.state !== "idle") return {};

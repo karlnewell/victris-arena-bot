@@ -98,7 +98,7 @@ function connect(): void {
         `server restarting: matchmaking paused; drain deadline ${msg.drain_deadline}. Keep playing until close, then reconnect.`,
       );
     } else if (msg.type === "hello") {
-      if (match?.id !== msg.match_id) match = { id: msg.match_id, rules: msg.rules };
+      if (match?.id !== msg.match_id) match = { id: msg.match_id, rules: msg.rules, pads: msg.pickups, map: msg.map };
       ws.send(JSON.stringify({ type: "ready" }));
     } else if (msg.type === "observation") ws.send(reply(msg, match));
     else if (msg.type === "end") {
